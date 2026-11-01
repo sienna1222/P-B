@@ -1,4 +1,4 @@
-# 数据清洗排纳
+# 数据载入
 library(dplyr)
 #1. 载入原始数据集
 data(NHANES4)
@@ -30,6 +30,7 @@ cat("原始总样本量 (N_total):", n_current, "\n")
 #新增 egfr 变量
 nhanes_work <- NHANES4 %>%
   mutate(egfr = calc_egfr_2021(scr = creat, age = age, sex = gender))
+# 数据排纳
 #步骤 1：年龄筛选 (纳入 >= 45 岁中老年人群)
 step1_data <- nhanes_work %>% filter(!is.na(age) & age >= 45)
 N1 <- nrow(step1_data)
