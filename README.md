@@ -22,29 +22,38 @@ calc_egfr_2021 <- function(scr, age, sex) {
   }
   return(egfr)
 }
-# 3. 执行排纳流程
-n_total <- nrow(NHANES4)
-nhanes_analytic <- NHANES4 %>%
-  # 新增 egfr 变量
-  mutate(egfr = calc_egfr_2021(scr = creat, age = age, sex = gender)) %>%
-  # 步骤 1：年龄筛选 (纳入 >= 45 岁成年人)
-  filter(!is.na(age) & age >= 45) %>%
-  { n_step1 <- nrow(.); message("Step 1 (Age >= 45): ", n_step1); . } %>%
-  # 步骤 2：排除孕妇 (pregnant == 1)
-  filter(pregnant != 1 | is.na(pregnant)) %>%
-  { n_step2 <- nrow(.); message("Step 2 (Exclude Pregnant): ", n_step2); . } %>%
-  # 步骤 3：剔除核心原生变量缺失者
-  filter(
-    !is.na(gender),
-    !is.na(creat),
-    !is.na(egfr),
-    !is.na(phenoage0),
-    !is.na(kdm0)
-  ) %>%
-  { n_step3 <- nrow(.); message("Step 3 (Complete Core Data): ", n_step3); . } %>%
-  # 步骤 4：剔除极端离群值 (eGFR < 15)
-  filter(egfr >= 15) %>%
-  { n_step4 <- nrow(.); message("Step 4 (Final Analytic Sample): ", n_step4); . }
-# 查看最终分析样本量
-cat("原始总样本量:", n_total, "\n")
-cat("最终纳入分析的样本量:", nrow(nhanes_analytic), "\n")
+# 3. 初始化记录初始样本量
+n_current <- nrow(NHANES4)
+cat("=== 队列排纳过程统计 ===\n")
+cat("原始总样本量 (N_total):", n_current, "\n")
+# 新增 egfr 变量
+nhanes_work <- NHANES4 %>%
+  mutate(egfr = calc_egfr_2021(scr = creat, age = age, sex = gender))
+# 步骤 1：年龄筛选 (纳入 >= 45 岁中老年人群)
+step1_data <- nhanes_work %>% filter(!is.na(age) & age >= 45)
+N1 <- nrow(step1_data)
+cat("步骤 1 (筛选年龄 >= 45 岁): 剔除", n_current - n_step1, "人 | 剩余:", n_step1, "人\n")
+n_current <- N1
+# 步骤 2：排除孕妇 (pregnant == 1)
+step2_data <- step1_data %>% filter(pregnant != 1 | is.na(pregnant))
+N2 <- nrow(step2_data)
+cat("步骤 2 (排除孕妇): 剔除", n_current - N2, "人 | 剩余:", N2, "人\n")
+n_current <- N2
+# 步骤 3：剔除核心原生变量缺失者 (gender, creat, egfr, phenoage0, kdm0,status,permth_int)
+step3_data <- step2_data %>% filter(
+  !is.na(gender),
+  !is.na(creat),
+  !is.na(egfr),
+  !is.na(phenoage0),
+  !is.na(kdm0),
+  !is.na(status),
+  !is.na(permth_int)
+)
+N3 <- nrow(step3_data)
+cat("步骤 3 (剔除核心变量缺失者): 剔除", n_current - N3, "人 | 剩余:", N3, "人\n")
+n_current <- N3
+# 步骤 4：剔除极端离群值 (eGFR < 15)
+nhanes_analytic <- step3_data %>% filter(egfr >= 15)
+N4 <- nrow(nhanes_analytic)
+cat("步骤 4 (剔除 eGFR < 15 极端值): 剔除", n_current -N4, "人 | 最终分析样本:", N4, "人\n")
+cat("========================\n")
