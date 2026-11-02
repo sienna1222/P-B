@@ -96,3 +96,82 @@ nhanes_analytic_clustered$cluster_gmm <- as.factor(gmm_fit_final$classification)
 #6. 查看最终各亚型人数分布
 cat("=== 4 组亚型人数最终分布 ===\n")
 print(table(nhanes_analytic_clustered$cluster_gmm, useNA = "ifany"))
+# Table1 人群基线表
+#1. 加载必要的统计包
+library(tableone)
+library(dplyr)
+#2. 定义你要展示在 Table 1 中的所有变量清单
+#包含：人口学特征、生活方式、重新定义的既往疾病史、以及聚类核心/衰老指标
+vars_to_compare <- c(
+  "age", "gender", "race", "education", "poverty_ratio", 
+  "bmi", "sbp", "dbp", "new_hyperten", "new_diabetes", 
+  "phenoage0", "kdm0", "egfr"
+)
+#3. 确保分类变量（如性别、种族、教育、疾病史、聚类标签）在数据中被正确转换为因子类型
+nhanes_analytic_clustered <- nhanes_analytic_clustered %>%
+  mutate(
+    gender = as.factor(gender),
+    race = as.factor(race),
+    education = as.factor(education),
+    new_hyperten = as.factor(new_hyperten),
+    new_diabetes = as.factor(new_diabetes),
+    cluster_gmm = as.factor(cluster_gmm) # 确保聚类标签为因子
+  )
+#4. 明确指定哪些是分类变量（以便程序自动计算频数和构成比 %）
+categorical_vars <- c("gender", "race", "education", "new_hyperten", "new_diabetes")
+#5. 生成按 4 个聚类亚型（strata）分组的 Table 1 对象
+table1_obj <- CreateTableOne(
+  vars = vars_to_compare,
+  strata = "cluster_gmm",
+  data = nhanes_analytic_clustered,
+  factorVars = categorical_vars,
+  test = TRUE # 自动计算 p 值（连续变量用方差分析/秩和检验，分类变量用卡方检验）
+)
+#6. 在控制台中打印完整的 Table 1 结果（包含均值±标准差、频数/百分比及 p 值、SMD）
+print(table1_obj, showAllLevels = TRUE, smd = TRUE)
+#7. 导出为 CSV 文件，方便直接复制到 Word 或 Excel 中排版
+table1_df <- print(table1_obj, printToggle = FALSE, showAllLevels = TRUE)
+write.csv(table1_df, file = "Baseline_Table1_Final_Clusters.csv", row.names = TRUE)
+cat("=== Table 1 已成功导出为 CSV 文件，可在当前工作目录下查看！===\n")
+# K-M生存曲线
+library(survminer)
+km_plot_optimized <- ggsurvplot(
+  km_fit,
+  data = nhanes_analytic_clustered,
+    #1. 核心显示优化
+  pval = TRUE,             
+  pval.coord = c(5, 0.82), # 将 p 值精确放置在图内部的合理坐标位置（可根据实际情况微调）
+  conf.int = TRUE,         # 保留置信区间阴影（可设为 FALSE 让曲线更清爽）
+    # 2. 纵轴范围缩放（核心优化：将纵轴截断显示为 0.75 到 1.00，放大曲线差异）
+  ylim = c(0.75, 1.00),    
+    # 3. 删失点与线条优化
+  censv = TRUE,            # 是否显示删失点（若觉得太挤可设为 FALSE 不显示竖线）
+  surv.median.line = "none", # 不画中位生存期虚线，保持画面干净
+    # 4. 风险集表格（Risk Table）优化
+  risk.table = TRUE,       
+  risk.table.col = "strata",
+  risk.table.height = 0.25,# 调整风险表的高度占比
+  risk.table.y.text.col = TRUE, # 风险表左侧亚型名称带颜色
+    # 5. 配色与标签美化
+  palette = c("#2E9FDF", "#E7B800", "#FC4E07", "#2ca02c"), # 自定义经典 4 色
+  xlab = "Follow-up Time (Months)", 
+  ylab = "Survival Probability",
+  legend.title = "Subtypes",
+  legend.labs = c("Subtype 1", "Subtype 2", "Subtype 3", "Subtype 4"),
+    # 6. 图例位置优化（放入图内右上角，节省版面）
+  legend = c(0.85, 0.25), 
+    ggtheme = theme_bw() + theme(
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 11, color = "black"),
+    axis.title = element_text(size = 12, face = "bold"),
+    legend.background = element_rect(fill = alpha("white", 0.8))
+  )
+)
+#打印优化后的图形
+print(km_plot_optimized)
+#导出为高分辨率 PDF（SCI 论文最爱用的矢量格式）
+ggsave("KM_Survival_Curve_Optimized.pdf", plot = print(km_plot_optimized), width = 8, height = 7)
+#导出为 300 DPI 的高清晰 TIFF 图片
+tiff("KM_Survival_Curve_Optimized.tiff", width = 2400, height = 2100, res = 300)
+print(km_plot_optimized)
+dev.off()
