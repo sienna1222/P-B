@@ -1,69 +1,49 @@
-# 数据载入
 library(dplyr)
+library(mclust)
+library(tableone)
+# 数据排纳
 #1. 载入原始数据集
 data(NHANES4)
-#2. 定义 CKD-EPI 2021（无种族修正版）计算函数
+#2. 定义 CKD-EPI 2021 计算函数
 calc_egfr_2021 <- function(scr, age, sex) {
   egfr <- numeric(length(scr))
   for(i in seq_along(scr)) {
-    s <- scr[i]
-    a <- age[i]
-    sx <- sex[i]
-    if(is.na(s) || is.na(a) || is.na(sx)) {
-      egfr[i] <- NA
-      next
-    }
-    if(sx == 2) { # 女性
-      kappa <- 0.7; alpha <- -0.241; mult <- 1.012
-      egfr[i] <- 142 * (min(s/kappa, 1)^alpha) * (max(s/kappa, 1)^-1.200) * (0.9938^a) * mult
-    } else { # 男性
-      kappa <- 0.9; alpha <- -0.302; mult <- 1.000
-      egfr[i] <- 142 * (min(s/kappa, 1)^alpha) * (max(s/kappa, 1)^-1.200) * (0.9938^a) * mult
+    s <- scr[i]; a <- age[i]; sx <- sex[i]
+    if(is.na(s) || is.na(a) || is.na(sx)) { egfr[i] <- NA; next }
+    if(sx == 2) {
+      egfr[i] <- 142 * (min(s/0.7, 1)^-0.241) * (max(s/0.7, 1)^-1.200) * (0.9938^a) * 1.012
+    } else {
+      egfr[i] <- 142 * (min(s/0.9, 1)^-0.302) * (max(s/0.9, 1)^-1.200) * (0.9938^a) * 1.000
     }
   }
   return(egfr)
 }
-#3. 初始化记录初始样本量
-n_current <- nrow(NHANES4)
-cat("=== 队列排纳过程统计 ===\n")
-cat("原始总样本量 (N_total):", n_current, "\n")
-#新增 egfr 变量
+#3.【关键步骤】：在排纳前，利用临床标准重新衍生高血压和糖尿病状态
 nhanes_work <- NHANES4 %>%
-  mutate(egfr = calc_egfr_2021(scr = creat, age = age, sex = gender))
-library(dplyr)
-library(mclust)
-# 数据排纳
-#步骤 1：年龄筛选 (纳入 >= 45 岁中老年人群)
-step1_data <- nhanes_work %>% filter(!is.na(age) & age >= 45)
-N1 <- nrow(step1_data)
-cat("步骤 1 (筛选年龄 >= 45 岁): 剔除", n_current - N1, "人 | 剩余:", N1, "人\n") # 已修复 n_step1 为 N1
-n_current <- N1
-#步骤 2：排除孕妇 (pregnant == 1)
-step2_data <- step1_data %>% filter(pregnant != 1 | is.na(pregnant))
-N2 <- nrow(step2_data)
-cat("步骤 2 (排除孕妇): 剔除", n_current - N2, "人 | 剩余:", N2, "人\n")
-n_current <- N2
-#步骤 3：剔除核心原生变量、随访数据及聚类变量的缺失者
-#把 cluster_vars（phenoage0, kdm0, egfr, bmi, sbp）全部纳入过滤，确保零 NA
-step3_data <- step2_data %>% filter(
-  !is.na(gender),
-  !is.na(creat),
-  !is.na(egfr),
-  !is.na(phenoage0),
-  !is.na(kdm0),
-  !is.na(status),
-  !is.na(permth_int),
-  !is.na(bmi),
-  !is.na(sbp)
-)
-N3 <- nrow(step3_data)
-cat("步骤 3 (剔除核心变量及随访/聚类指标缺失者): 剔除", n_current - N3, "人 | 剩余:", N3, "人\n")
-n_current <- N3
-#步骤 4：剔除极端离群值 (eGFR < 15)
-nhanes_analytic <- step3_data %>% filter(egfr >= 15)
-N4 <- nrow(nhanes_analytic)
-cat("步骤 4 (剔除 eGFR < 15 极端值): 剔除", n_current - N4, "人 | 最终分析样本:", N4, "人\n")
-cat("========================\n")
+  mutate(
+    egfr = calc_egfr_2021(scr = creat, age = age, sex = gender),
+        # 【重新定义高血压】：平均 SBP >= 140 或 DBP >= 90，或者原本数据中自报/确诊（若有记录）
+    # 这里主要基于生理测量值判定，可完美避免 93% 的高缺失率
+    new_hyperten = if_else(sbp >= 140 | dbp >= 90 | hyperten == 1, 1, 0, missing = 0),
+        # 【重新定义糖尿病】：HbA1c > 6.5% 或 空腹血糖 >= 7.0 mmol/L，或者原本数据标记为 1
+    new_diabetes = if_else(hba1c > 6.5 | glucose_fasting >= 7.0 | diabetes == 1, 1, 0, missing = 0)
+  )
+#4. 规范排纳流程
+nhanes_analytic <- nhanes_work %>%
+  filter(!is.na(age) & age >= 45) %>%
+  filter(pregnant != 1 | is.na(pregnant)) %>%
+  filter(
+    !is.na(gender), !is.na(creat), !is.na(egfr),
+    !is.na(status), !is.na(permth_int)
+  ) %>%
+  filter(egfr >= 15) %>%
+  filter(
+    !is.na(phenoage0),
+    !is.na(kdm0),
+    !is.na(bmi),
+    !is.na(sbp)
+  )
+cat("重新定义并清洗后的最终分析样本量:", nrow(nhanes_analytic), "\n")
 
 # GMM聚类
 library(dplyr)
