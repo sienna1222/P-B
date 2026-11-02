@@ -175,3 +175,138 @@ ggsave("KM_Survival_Curve_Optimized.pdf", plot = print(km_plot_optimized), width
 tiff("KM_Survival_Curve_Optimized.tiff", width = 2400, height = 2100, res = 300)
 print(km_plot_optimized)
 dev.off()
+# 查看 4 个亚型在核心衰老/年龄指标上的均值，查找真正的“最优/最健康组”
+nhanes_analytic_clustered %>%
+  group_by(cluster_gmm) %>%
+  summarise(
+    N = n(),
+    Mean_Age = mean(age, na.rm = TRUE),
+    Mean_PhenoAge = mean(phenoage0, na.rm = TRUE),
+    Mean_KDM = mean(kdm0, na.rm = TRUE),
+    Death_Event_Rate = mean(status, na.rm = TRUE)
+  )
+  # 单因素Cox
+library(survival)
+#第一部分：数据预处理与单因素 Cox 回归
+#1. 显式将 cluster_gmm 转换为因子，并将第 4 组（最健康/年轻组）设定为参照基准 (ref = "4", HR = 1.00)
+nhanes_analytic_clustered$cluster_gmm <- relevel(factor(nhanes_analytic_clustered$cluster_gmm), ref = "4")
+#2. 拟合单因素 Cox 比例风险回归模型
+uni_cox_model <- coxph(
+  Surv(permth_int, status) ~ cluster_gmm, 
+  data = nhanes_analytic_clustered
+)
+#3. 提取详细结果并构建标准 SCI 论文格式的表格
+uni_summary <- summary(uni_cox_model)
+uni_hr <- exp(uni_summary$coefficients[, "coef"])
+uni_ci <- exp(confint(uni_cox_model))
+uni_pval <- uni_summary$coefficients[, "Pr(>|z|)"]
+uni_results_table <- data.frame(
+  Subtype = c("Subtype 1 vs Subtype 4", "Subtype 2 vs Subtype 4", "Subtype 3 vs Subtype 4"),
+  HR = round(uni_hr, 3),
+  Lower_95CI = round(uni_ci[, 1], 3),
+  Upper_95CI = round(uni_ci[, 2], 3),
+  P_value = signif(uni_pval, 3)
+)
+rownames(uni_results_table) <- NULL
+cat("=== 1. 单因素 Cox 回归结果汇总表 ===\n")
+print(uni_results_table)
+#导出为表格文件
+write.csv(uni_results_table, file = "Optimized_Univariate_Cox_Results.csv", row.names = FALSE)
+#第二部分：等比例风险假定检验 (PH 假定检验)
+#1. 运行严谨的统计学量化检验 (cox.zph)
+ph_test <- cox.zph(uni_cox_model)
+cat("\n=== 2. 等比例风险假定 (cox.zph) 统计检验结果 ===\n")
+print(ph_test)
+#2. 绘制发表级的 Schoenfeld 残差诊断图
+#建议直接输出为高分辨率 PDF 矢量图供论文使用
+pdf("Optimized_Schoenfeld_Residuals_Plot.pdf", width = 7, height = 6)
+par(mfrow = c(1, 1), mar = c(4.5, 4.5, 2, 1))
+plot(
+  ph_test, 
+  col = "black", 
+  lwd = 1.5, 
+  lty = c(1, 2, 2), # 实线为平滑拟合曲线，虚线为 95% 置信区间
+  xlab = "Follow-up Time (Months)", 
+  ylab = "Beta(t) for Cluster Subtypes"
+)
+abline(h = 0, col = "red", lty = 2, lwd = 1) # 添加 y=0 的参考基准线
+title(main = "Schoenfeld Residuals Test for Proportional Hazards Assumption")
+dev.off()
+cat("\n=== 提示：Schoenfeld 诊断图已成功保存为矢量 PDF 文件！===\n")
+# 绘制热图
+library(dplyr)
+library(tidyr)
+#计算均值
+#定义我们用于聚类和展示的核心变量
+cluster_vars <- c("phenoage0", "kdm0", "egfr", "bmi", "sbp")
+#计算各亚型在各核心指标上的均值
+subtype_profile <- nhanes_analytic_clustered %>%
+  group_by(cluster_gmm) %>%
+  summarise(across(all_of(cluster_vars), ~ mean(.x, na.rm = TRUE)))
+#对数据进行 Z-score 标准化（均值为0，方差为1）
+subtype_profile_scaled <- subtype_profile %>%
+  mutate(across(all_of(cluster_vars), ~ scale(.x)[, 1]))
+print(subtype_profile_scaled)
+#加载必要的精细化作图包
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+#1. 确保数据准备就绪，并【强制设定因子的上下排列顺序】
+#逻辑：将最健康的 Subtype 4 放在最下方，高危的 Subtype 2 放在最上方
+subtype_profile_scaled$cluster_gmm <- factor(
+  subtype_profile_scaled$cluster_gmm, 
+  levels = c("2", "3", "1", "4") # ggplot2 默认纵轴自下而上，所以倒序排列可使 4 在最下、2 在最上
+)
+#2. 将宽数据转换为 ggplot2 专用的长数据格式 (Long format)
+heatmap_long <- subtype_profile_scaled %>%
+  pivot_longer(
+    cols = all_of(c("phenoage0", "kdm0", "egfr", "bmi", "sbp")),
+    names_to = "Variable",
+    values_to = "Z_Score"
+  )
+#规范化变量显示名称
+heatmap_long$Variable <- factor(
+  heatmap_long$Variable,
+  levels = c("phenoage0", "kdm0", "egfr", "bmi", "sbp"),
+  labels = c("PhenoAge", "KDM Biological Age", "eGFR", "BMI", "Systolic BP")
+)
+heatmap_long$Subtype <- paste0("Subtype ", heatmap_long$cluster_gmm)
+heatmap_long$Subtype <- factor(
+  heatmap_long$Subtype, 
+  levels = c("Subtype 2", "Subtype 3", "Subtype 1", "Subtype 4") # 确保视觉上由上至下符合高危->健康或健康->高危
+)
+#3. 使用 ggplot2 绘制高颜值、顶刊风格的精细化热图
+p_heatmap_pro <- ggplot(heatmap_long, aes(x = Variable, y = Subtype, fill = Z_Score)) +
+  #绘制带有精致白色网格边缘的方块
+  geom_tile(color = "white", linewidth = 1.2, na.rm = FALSE) +
+  #在方块中央精准标注标准化数值（保留两位小数）
+  geom_text(aes(label = sprintf("%.2f", Z_Score)), color = "black", size = 4.5, fontface = "bold") +
+  #采用高档的蓝-白-红发散配色 (RdBu 经典风格)
+  scale_fill_gradient2(
+    low = "#2166AC",      # 优质深蓝（代表低风险/负向偏离）
+    mid = "#FFFFBF",      # 柔和过渡白黄色
+    high = "#B2182B",     # 优质深红（代表高风险/正向偏离）
+    midpoint = 0,
+    limit = c(-1.5, 1.5), 
+    name = "Z-Score"
+  ) +
+  #极简且专业的学术主题排版
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1, face = "bold", color = "black", size = 12),
+    axis.text.y = element_text(face = "bold", color = "black", size = 12),
+    axis.title = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16, margin = margin(b = 15)),
+    legend.title = element_text(face = "bold", size = 11),
+    legend.position = "right",
+    plot.margin = margin(20, 20, 20, 20)
+  ) +
+  labs(
+    title = "Clinical and Aging Profiles Across GMM Subtypes"
+  )
+#4. 在控制台打印预览
+print(p_heatmap_pro)
+#5. 导出为高分辨率出版级 PDF 矢量图
+ggsave("Publication_Quality_Heatmap_Reordered.pdf", plot = p_heatmap_pro, width = 8, height = 5, dpi = 300)
+cat("\n=== 提示：纵轴排序修正后的顶刊热图已成功导出为 PDF 文件！===\n")
