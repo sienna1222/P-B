@@ -236,65 +236,66 @@ cat("\n=== 提示：Schoenfeld 诊断图已成功保存为矢量 PDF 文件！==
 # 绘制热图
 library(dplyr)
 library(tidyr)
-#计算均值
-#定义我们用于聚类和展示的核心变量
+library(ggplot2)
+#1. 计算均值
+#定义用于展示的核心变量（保留 kdm0）
 cluster_vars <- c("phenoage0", "kdm0", "egfr", "bmi", "sbp")
 #计算各亚型在各核心指标上的均值
 subtype_profile <- nhanes_analytic_clustered %>%
   group_by(cluster_gmm) %>%
   summarise(across(all_of(cluster_vars), ~ mean(.x, na.rm = TRUE)))
-#对数据进行 Z-score 标准化（均值为0，方差为1）
+#对数据进行 Z-score 标准化，并对保护性指标 eGFR 实施方向反转（取负）
 subtype_profile_scaled <- subtype_profile %>%
-  mutate(across(all_of(cluster_vars), ~ scale(.x)[, 1]))
+  mutate(
+    phenoage0 = scale(phenoage0)[, 1],
+    kdm0      = scale(kdm0)[, 1],
+    egfr      = -scale(egfr)[, 1],  # 【核心修改】：取负值，代表肾功能减退/损伤程度
+    bmi       = scale(bmi)[, 1],
+    sbp       = scale(sbp)[, 1]
+  )
 print(subtype_profile_scaled)
-#加载必要的精细化作图包
-library(ggplot2)
-library(dplyr)
-library(tidyr)
-#1. 确保数据准备就绪，并【强制设定因子的上下排列顺序】
-#逻辑：将最健康的 Subtype 4 放在最下方，高危的 Subtype 2 放在最上方
+#2. 维持原有的因子与纵轴设定逻辑
 subtype_profile_scaled$cluster_gmm <- factor(
   subtype_profile_scaled$cluster_gmm, 
-  levels = c("2", "3", "1", "4") # ggplot2 默认纵轴自下而上，所以倒序排列可使 4 在最下、2 在最上
+  levels = c("2", "3", "1", "4")
 )
-#2. 将宽数据转换为 ggplot2 专用的长数据格式 (Long format)
+#3. 将宽数据转换为 ggplot2 专用的长数据格式 (Long format)
 heatmap_long <- subtype_profile_scaled %>%
   pivot_longer(
     cols = all_of(c("phenoage0", "kdm0", "egfr", "bmi", "sbp")),
     names_to = "Variable",
     values_to = "Z_Score"
   )
-#规范化变量显示名称
+#规范化变量显示名称（将 eGFR 标签调整为直观反映损伤程度的名称）
 heatmap_long$Variable <- factor(
   heatmap_long$Variable,
   levels = c("phenoage0", "kdm0", "egfr", "bmi", "sbp"),
-  labels = c("PhenoAge", "KDM Biological Age", "eGFR", "BMI", "Systolic BP")
+  labels = c("PhenoAge", "KDM Biological Age", "Renal Impairment\n(-eGFR)", "BMI", "Systolic BP")
 )
 heatmap_long$Subtype <- paste0("Subtype ", heatmap_long$cluster_gmm)
 heatmap_long$Subtype <- factor(
   heatmap_long$Subtype, 
-  levels = c("Subtype 2", "Subtype 3", "Subtype 1", "Subtype 4") # 确保视觉上由上至下符合高危->健康或健康->高危
+  levels = c("Subtype 2", "Subtype 3", "Subtype 1", "Subtype 4")
 )
-#3. 使用 ggplot2 绘制高颜值、顶刊风格的精细化热图
+#4. 使用 ggplot2 绘制高颜值、顶刊风格的精细化热图
 p_heatmap_pro <- ggplot(heatmap_long, aes(x = Variable, y = Subtype, fill = Z_Score)) +
   #绘制带有精致白色网格边缘的方块
   geom_tile(color = "white", linewidth = 1.2, na.rm = FALSE) +
-  #在方块中央精准标注标准化数值（保留两位小数）
+  #在方块中央标注标准化数值（保留两位小数）
   geom_text(aes(label = sprintf("%.2f", Z_Score)), color = "black", size = 4.5, fontface = "bold") +
-  #采用高档的蓝-白-红发散配色 (RdBu 经典风格)
+  #蓝-白-红发散配色 (统一极性：红代表病理/高风险，蓝代表健康/低风险)
   scale_fill_gradient2(
-    low = "#2166AC",      # 优质深蓝（代表低风险/负向偏离）
+    low = "#2166AC",      # 优质深蓝（代表健康保护/负向偏离）
     mid = "#FFFFBF",      # 柔和过渡白黄色
-    high = "#B2182B",     # 优质深红（代表高风险/正向偏离）
+    high = "#B2182B",     # 优质深红（代表病理加重/正向偏离）
     midpoint = 0,
     limit = c(-1.5, 1.5), 
-    name = "Z-Score"
+    name = "Risk\nZ-Score"
   ) +
-  #极简且专业的学术主题排版
   theme_minimal(base_size = 14) +
   theme(
     panel.grid = element_blank(),
-    axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1, face = "bold", color = "black", size = 12),
+    axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1, face = "bold", color = "black", size = 11, lineheight = 0.9),
     axis.text.y = element_text(face = "bold", color = "black", size = 12),
     axis.title = element_blank(),
     plot.title = element_text(face = "bold", hjust = 0.5, size = 16, margin = margin(b = 15)),
@@ -305,8 +306,8 @@ p_heatmap_pro <- ggplot(heatmap_long, aes(x = Variable, y = Subtype, fill = Z_Sc
   labs(
     title = "Clinical and Aging Profiles Across GMM Subtypes"
   )
-#4. 在控制台打印预览
+#5. 在控制台打印预览
 print(p_heatmap_pro)
-#5. 导出为高分辨率出版级 PDF 矢量图
-ggsave("Publication_Quality_Heatmap_Reordered.pdf", plot = p_heatmap_pro, width = 8, height = 5, dpi = 300)
-cat("\n=== 提示：纵轴排序修正后的顶刊热图已成功导出为 PDF 文件！===\n")
+#6. 导出为高分辨率出版级 PDF 矢量图
+ggsave("Publication_Quality_Heatmap_Reordered.pdf", plot = p_heatmap_pro, width = 8.5, height = 5, dpi = 300)
+cat("\n=== 提示：eGFR 极性反转后的顶刊热图已成功导出为 PDF 文件！===\n")
